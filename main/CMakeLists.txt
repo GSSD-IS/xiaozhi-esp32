@@ -33,7 +33,9 @@ set(SOURCES "audio/audio_codec.cc"
             "system_info.cc"
             "application.cc"
             "ota.cc"
+            "network_profile_store.cc"
             "settings.cc"
+            "wifi_profile_connector.cc"
             "device_state_machine.cc"
             "assets.cc"
             "main.cc"
@@ -941,6 +943,7 @@ idf_component_register(SRCS ${SOURCES}
                         efuse
                         bt
                         fatfs
+                        wpa_supplicant
                     )
 
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME

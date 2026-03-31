@@ -3,6 +3,7 @@
 #include <aes/esp_aes.h>
 #include <cassert>
 #include <cstring>
+#include <string>
 #include <vector>
 #include "esp_blufi_api.h"
 #include "esp_err.h"
@@ -136,6 +137,7 @@ private:
     bool m_deinited;
     uint8_t m_sta_bssid[6]{};
     uint8_t m_sta_ssid[32]{};
+    std::string m_sta_username;
     int m_sta_ssid_len;
     bool m_sta_is_connecting;
     esp_blufi_extra_info_t m_sta_conn_info{};

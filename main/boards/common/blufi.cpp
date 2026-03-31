@@ -59,7 +59,8 @@ void esp_blufi_btc_deinit(void);
 #include "esp_crc.h"
 #include "esp_random.h"
 #include "mbedtls/md5.h"
-#include "ssid_manager.h"
+#include "network_profile_store.h"
+#include "wifi_profile_connector.h"
 
 static const char* BLUFI_TAG = "BLUFI_CLASS";
 
@@ -659,6 +660,8 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
         case ESP_BLUFI_EVENT_BLE_CONNECT:
             ESP_LOGI(BLUFI_TAG, "BLUFI ble connect");
             m_ble_is_connected = true;
+            memset(&m_sta_config, 0, sizeof(m_sta_config));
+            m_sta_username.clear();
             esp_blufi_adv_stop();
             _security_init();
             break;
@@ -706,11 +709,22 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
             break;
         }
         case ESP_BLUFI_EVENT_REQ_CONNECT_TO_AP: {
-            ESP_LOGI(BLUFI_TAG, "BLUFI request wifi connect to AP via esp-wifi-connect");
+            ESP_LOGI(BLUFI_TAG, "BLUFI request WiFi connect");
             std::string ssid(reinterpret_cast<const char*>(m_sta_config.sta.ssid));
             std::string password(reinterpret_cast<const char*>(m_sta_config.sta.password));
+            NetworkProfile profile;
+            profile.ssid = ssid;
+            profile.password = password;
+            if (!m_sta_username.empty()) {
+                profile.auth_type = NetworkAuthType::kPeap;
+                profile.username = m_sta_username;
+            }
 
-            SsidManager::GetInstance().AddSsid(ssid, password);
+            if (!NetworkProfileStore::GetInstance().Save(profile)) {
+                ESP_LOGE(BLUFI_TAG, "Failed to save network profile");
+                break;
+            }
+
             m_scan_should_save_ssid = false;
 
             m_sta_ssid_len = static_cast<int>(std::min(ssid.size(), sizeof(m_sta_ssid)));
@@ -723,23 +737,16 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
             m_sta_conn_info.sta_ssid = m_sta_ssid;
             m_sta_conn_info.sta_ssid_len = m_sta_ssid_len;
 
-            auto& wifi_manager = WifiManager::GetInstance();
-
-            if (wifi_manager.IsInitialized()) {
-                if (wifi_manager.IsConfigMode()) {
-                    wifi_manager.StopConfigAp();
-                }
-                wifi_manager.StopStation();
-            }
-
-            if (!wifi_manager.IsInitialized() && !wifi_manager.Initialize()) {
-                ESP_LOGE(BLUFI_TAG, "Failed to initialize WifiManager");
+            if (!WifiProfileConnector::GetInstance().Connect(profile)) {
+                m_sta_is_connecting = false;
+                esp_blufi_extra_info_t info = {};
+                info.sta_ssid = m_sta_ssid;
+                info.sta_ssid_len = m_sta_ssid_len;
+                esp_blufi_send_wifi_conn_report(WIFI_MODE_STA, ESP_BLUFI_STA_CONN_FAIL,
+                                                _get_softap_conn_num(), &info);
+                ESP_LOGE(BLUFI_TAG, "Failed to start WiFi connection");
                 break;
             }
-
-            vTaskDelay(pdMS_TO_TICKS(500));
-
-            wifi_manager.StartStation();
 
             xTaskCreate(
                 [](void* ctx) {
@@ -797,7 +804,7 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
                         info.sta_ssid_len = self->m_sta_ssid_len;
                         esp_blufi_send_wifi_conn_report(mode, ESP_BLUFI_STA_CONN_FAIL,
                                                         softap_conn_num, &info);
-                        ESP_LOGE(BLUFI_TAG, "Failed to connect to WiFi via esp-wifi-connect");
+                        ESP_LOGE(BLUFI_TAG, "Failed to connect to WiFi using saved profile");
                     }
                     vTaskDelete(nullptr);
                 },
@@ -861,7 +868,12 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
             strncpy((char*)m_sta_config.sta.password, (char*)param->sta_passwd.passwd,
                     param->sta_passwd.passwd_len);
             m_sta_config.sta.password[param->sta_passwd.passwd_len] = '\0';
-            ESP_LOGI(BLUFI_TAG, "Recv STA PASSWORD : %s", m_sta_config.sta.password);
+            ESP_LOGI(BLUFI_TAG, "Recv STA password");
+            break;
+        case ESP_BLUFI_EVENT_RECV_USERNAME:
+            m_sta_username.assign(reinterpret_cast<const char*>(param->username.name),
+                                  param->username.name_len);
+            ESP_LOGI(BLUFI_TAG, "Recv enterprise username");
             break;
         case ESP_BLUFI_EVENT_GET_WIFI_LIST: {
             ESP_LOGI(BLUFI_TAG, "BLUFI get wifi list");

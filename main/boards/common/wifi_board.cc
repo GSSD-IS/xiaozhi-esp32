@@ -2,8 +2,10 @@
 
 #include "display.h"
 #include "application.h"
+#include "network_profile_store.h"
 #include "system_info.h"
 #include "settings.h"
+#include "wifi_profile_connector.h"
 #include "assets/lang_config.h"
 
 #include <freertos/FreeRTOS.h>
@@ -87,6 +89,19 @@ void WifiBoard::StartNetwork() {
 }
 
 void WifiBoard::TryWifiConnect() {
+    NetworkProfile profile;
+    if (NetworkProfileStore::GetInstance().Load(profile)) {
+        ESP_LOGI(TAG, "Starting WiFi connection attempt using %s profile",
+                 profile.IsEnterprise() ? "PEAP" : "PSK");
+        esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
+        if (!WifiProfileConnector::GetInstance().Connect(profile)) {
+            esp_timer_stop(connect_timer_);
+            ESP_LOGW(TAG, "Failed to start WiFi connection, entering config mode");
+            StartWifiConfigMode();
+        }
+        return;
+    }
+
     auto& ssid_manager = SsidManager::GetInstance();
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 

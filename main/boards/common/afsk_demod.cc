@@ -1,9 +1,10 @@
 #include "afsk_demod.h"
 #include <cstring>
 #include <algorithm>
+#include <vector>
 #include "esp_log.h"
 #include "display.h"
-#include "ssid_manager.h"
+#include "network_profile_store.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -12,6 +13,53 @@
 namespace audio_wifi_config
 {
     static const char *kLogTag = "AUDIO_WIFI_CONFIG";
+
+    namespace {
+
+    std::string TrimLine(const std::string& line) {
+        if (!line.empty() && line.back() == '\r') {
+            return line.substr(0, line.size() - 1);
+        }
+        return line;
+    }
+
+    bool ParseNetworkProfilePayload(const std::string& payload, NetworkProfile& profile) {
+        std::vector<std::string> lines;
+        size_t start = 0;
+        while (start <= payload.size()) {
+            size_t newline = payload.find('\n', start);
+            if (newline == std::string::npos) {
+                lines.push_back(TrimLine(payload.substr(start)));
+                break;
+            }
+
+            lines.push_back(TrimLine(payload.substr(start, newline - start)));
+            start = newline + 1;
+        }
+
+        while (!lines.empty() && lines.back().empty()) {
+            lines.pop_back();
+        }
+
+        if (lines.size() == 2) {
+            profile.auth_type = NetworkAuthType::kPsk;
+            profile.ssid = lines[0];
+            profile.password = lines[1];
+            return profile.IsValid();
+        }
+
+        if (lines.size() == 3) {
+            profile.auth_type = NetworkAuthType::kPeap;
+            profile.ssid = lines[0];
+            profile.username = lines[1];
+            profile.password = lines[2];
+            return profile.IsValid();
+        }
+
+        return false;
+    }
+
+    }  // namespace
 
     void ReceiveWifiCredentialsFromAudio(Application *app,
                                         WifiManager *wifi_manager,
@@ -76,25 +124,20 @@ namespace audio_wifi_config
             if (data_buffer.ProcessProbabilityData(probabilities, 0.5f)) {
                 // If complete data was received, extract WiFi credentials
                 if (data_buffer.decoded_text.has_value()) {
-                    ESP_LOGI(kLogTag, "Received text data: %s", data_buffer.decoded_text->c_str());
-                    display->SetChatMessage("system", data_buffer.decoded_text->c_str());
-                    
-                    // Split SSID and password by newline character
-                    std::string wifi_ssid, wifi_password;
-                    size_t newline_position = data_buffer.decoded_text->find('\n');
-                    if (newline_position != std::string::npos) {
-                        wifi_ssid = data_buffer.decoded_text->substr(0, newline_position);
-                        wifi_password = data_buffer.decoded_text->substr(newline_position + 1);
-                        ESP_LOGI(kLogTag, "WiFi SSID: %s, Password: %s", wifi_ssid.c_str(), wifi_password.c_str());
-                    } else {
-                        ESP_LOGE(kLogTag, "Invalid data format, no newline character found");
+                    NetworkProfile profile;
+                    if (!ParseNetworkProfilePayload(*data_buffer.decoded_text, profile)) {
+                        ESP_LOGE(kLogTag, "Invalid WiFi payload format");
                         continue;
                     }
-                    
-                    // Save WiFi credentials using SsidManager
-                    auto& ssid_manager = SsidManager::GetInstance();
-                    ssid_manager.AddSsid(wifi_ssid, wifi_password);
-                    ESP_LOGI(kLogTag, "WiFi credentials saved successfully");
+
+                    display->SetChatMessage("system", "Wi-Fi credentials received");
+
+                    if (!NetworkProfileStore::GetInstance().Save(profile)) {
+                        ESP_LOGE(kLogTag, "Failed to save WiFi credentials");
+                        continue;
+                    }
+
+                    ESP_LOGI(kLogTag, "WiFi credentials saved for SSID: %s", profile.ssid.c_str());
                     
                     // Exit config mode (triggers ConfigModeExit event)
                     wifi_manager->StopConfigAp();
